@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Colectivos en Vivo</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  html,body{margin:0;height:100%;font-family:-apple-system,Segoe UI,Roboto,sans-serif;}
+  #map{height:100%;width:100%;}
+  #status{position:absolute;top:10px;left:10px;z-index:1000;background:#fff;padding:6px 12px;
+    border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.3);font-size:13px;}
+  .colectivo-icon{background:#2563eb;border:2px solid #fff;border-radius:50%;width:16px;height:16px;
+    box-shadow:0 1px 4px rgba(0,0,0,.4);}
+  #filterBtn{position:absolute;top:10px;right:10px;z-index:1000;background:#2563eb;color:#fff;
+    border:none;border-radius:8px;padding:8px 14px;font-size:13px;box-shadow:0 1px 4px rgba(0,0,0,.3);cursor:pointer;}
+  #panel{position:absolute;top:52px;right:10px;z-index:1000;background:#fff;border-radius:12px;
+    box-shadow:0 2px 10px rgba(0,0,0,.25);width:260px;max-height:70vh;overflow-y:auto;display:none;padding:12px;}
+  #panel input[type="text"]{width:100%;padding:8px;border:1px solid #ddd;border-radius:8px;
+    font-size:13px;box-sizing:border-box;margin-bottom:8px;}
+  #panel .item{display:flex;align-items:center;gap:8px;padding:5px 2px;font-size:13px;cursor:pointer;}
+  #panel .dot{width:12px;height:12px;border-radius:50%;flex-shrink:0;}
+  #panel .clear{width:100%;margin-top:6px;padding:7px;border:1px solid #ddd;background:#f4f5f7;
+    border-radius:8px;font-size:13px;cursor:pointer;}
+</style>
+</head>
+<body>
+<div id="status">Cargando colectivos...</div>
+<button id="filterBtn">🔍 Filtrar línea</button>
+<div id="panel">
+  <input type="text" id="search" placeholder="Busca tu sector o número (ej: Vista Hermosa)">
+  <div id="list"></div>
+  <button class="clear" id="clearBtn">Mostrar todas</button>
+</div>
+<div id="map"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-database-compat.js"></script>
+<script>
+// ====== 1) PEGA AQUÍ TU CONFIG DE FIREBASE (la misma pantalla donde sacaste la de tu app de inventario) ======
+const firebaseConfig = {
+  apiKey: "AIzaSyCL0cYuNL9D_qvRmYSf88FpxzE17pORpFw",
+  authDomain: "colectivogo-7a5a3.firebaseapp.com",
+  databaseURL: "https://colectivogo-7a5a3-default-rtdb.firebaseio.com",
+  projectId: "colectivogo-7a5a3",
+  storageBucket: "colectivogo-7a5a3.firebasestorage.app",
+  messagingSenderId: "879522062261",
+  appId: "1:879522062261:web:c9e3304658dd9c889243fc"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+// ====== 2) Centro del mapa: cambia esto a tu ciudad/zona ======
+const map = L.map('map').setView([-29.9027, -71.2519], 13); // La Serena
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '&copy; OpenStreetMap contributors',
+  maxZoom: 19
+}).addTo(map);
+
+// ====== Líneas de taxis colectivos de La Serena (folio -> nombre) ======
+const LINEAS = {
+  5:"Línea 5 - Vista Hermosa", 6:"Línea 6 - La Herradura", 7:"Línea 7 - La Recova/Simón Bolívar",
+  9:"Línea 9 - La Serena", 10:"Línea 10 - Centro/Parte Alta", 11:"Línea 11 - Las Tinajas/Vista",
+  13:"Línea 13 - San Juan", 14:"Línea 14 - Compañías Alta", 15:"Línea 15 - Baquedano/Porvenir/Victoria",
+  20:"Línea 20 - El Agrado Peñuelas", 21:"Línea 21 - Tierras Blancas", 22:"Línea 22",
+  23:"Línea 23 - El Olivar", 24:"Línea 24 - Vista Hermosa", 28:"Línea 28 - Comser",
+  30:"Línea 30 - Vista Hermosa/El Indio", 31:"Línea 31 - Las Compañías", 32:"Línea 32",
+  33:"Línea 33 - Alfa Centauro", 34:"Línea 34 - Vista Hermosa", 35:"Línea 35 - Vista Hermosa",
+  36:"Línea 36", 37:"Línea 37 - Socoset", 38:"Línea 38", 39:"Línea 39 - Las Compañías Centro",
+  41:"Línea 41", 42:"Línea 42 - Calvario/San Juan", 44:"Línea 44 - Transblanca",
+  45:"Línea 45 - Villa El Parque", 48:"Línea 48 - San Pedro del Mar", 59:"Línea 59 - San Carlos",
+  61:"Línea 61 - Barrio Universitario", 63:"Línea 63 - Acosnavi", 65:"Línea 65",
+  67:"Línea 67 - Las Torres/San Juan", 70:"Línea 70 - Bosque San Carlos", 73:"Línea 73 - Bellavista",
+  75:"Línea 75 - Tierras Blancas", 77:"Línea 77 - San Juan"
+};
+// Color único por línea, calculado a partir del folio (ángulo dorado -> buena separación de colores)
+function colorFor(folio){
+  const hue = (folio * 137.508) % 360;
+  return `hsl(${hue}, 75%, 45%)`;
+}
+function iconFor(folio){
+  return L.divIcon({
+    className:'',
+    html:`<div style="width:16px;height:16px;border-radius:50%;background:${colorFor(folio)};border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4)"></div>`,
+    iconSize:[16,16]
+  });
+}
+const markers = {}; // id -> L.marker
+const selected = new Set(); // folios seleccionados; vacío = mostrar todas
+
+// ====== Panel de filtro ======
+const filterBtn = document.getElementById('filterBtn');
+const panel = document.getElementById('panel');
+const list = document.getElementById('list');
+const search = document.getElementById('search');
+const clearBtn = document.getElementById('clearBtn');
+
+filterBtn.onclick = () => { panel.style.display = panel.style.display === 'block' ? 'none' : 'block'; };
+
+function renderList(filterText){
+  list.innerHTML = '';
+  const term = (filterText || '').toLowerCase();
+  Object.entries(LINEAS)
+    .filter(([folio, nombre]) => nombre.toLowerCase().includes(term))
+    .forEach(([folio, nombre]) => {
+      const row = document.createElement('div');
+      row.className = 'item';
+      row.innerHTML = `<input type="checkbox" data-folio="${folio}" ${selected.has(+folio)?'checked':''}>
+        <span class="dot" style="background:${colorFor(+folio)}"></span><span>${nombre}</span>`;
+      row.querySelector('input').onchange = e => {
+        const f = +e.target.dataset.folio;
+        e.target.checked ? selected.add(f) : selected.delete(f);
+        refreshMarkers();
+      };
+      list.appendChild(row);
+    });
+}
+renderList('');
+search.oninput = () => renderList(search.value);
+clearBtn.onclick = () => { selected.clear(); renderList(search.value); refreshMarkers(); };
+
+// Reaplica el filtro a los marcadores ya dibujados (sin esperar el próximo cambio de Firebase)
+let lastData = {};
+function refreshMarkers(){
+  Object.entries(lastData).forEach(([id, c]) => {
+    const visible = selected.size === 0 || selected.has(c.folioLinea);
+    if (markers[id]) {
+      if (visible && !map.hasLayer(markers[id])) map.addLayer(markers[id]);
+      if (!visible && map.hasLayer(markers[id])) map.removeLayer(markers[id]);
+    }
+  });
+}
+
+const statusEl = document.getElementById('status');
+const ref = db.ref('colectivos');
+
+// Escucha cambios en tiempo real
+ref.on('value', snap => {
+  const data = snap.val() || {};
+  lastData = data;
+  const ids = Object.keys(data);
+  statusEl.textContent = ids.length ? `${ids.length} colectivo(s) en línea` : 'Sin colectivos en línea';
+
+  // Actualiza o crea marcadores
+  ids.forEach(id => {
+    const c = data[id];
+    if (!c.lat || !c.lng) return;
+    const folio = c.folioLinea;
+    const nombreLinea = LINEAS[folio] || c.linea || `Colectivo ${id}`;
+    const visible = selected.size === 0 || selected.has(folio);
+    if (markers[id]) {
+      markers[id].setLatLng([c.lat, c.lng]);
+      if (visible && !map.hasLayer(markers[id])) map.addLayer(markers[id]);
+      if (!visible && map.hasLayer(markers[id])) map.removeLayer(markers[id]);
+    } else {
+      const m = L.marker([c.lat, c.lng], {icon: iconFor(folio || 1)}).bindPopup(nombreLinea);
+      markers[id] = m;
+      if (visible) m.addTo(map);
+    }
+  });
+
+  // Elimina marcadores de colectivos que se desconectaron
+  Object.keys(markers).forEach(id => {
+    if (!ids.includes(id)) {
+      map.removeLayer(markers[id]);
+      delete markers[id];
+    }
+  });
+});
+</script>
+</body>
+</html>
